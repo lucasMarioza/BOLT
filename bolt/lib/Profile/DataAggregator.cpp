@@ -87,6 +87,13 @@ ReadPreAggregated("pa",
   cl::cat(AggregatorCategory));
 
 static cl::opt<bool>
+ReadCfgGrind("cfggrind",
+  cl::desc("skip perf and read data from a cfggrind file format"),
+  cl::init(false),
+  cl::ZeroOrMore,
+  cl::cat(AggregatorCategory));
+
+static cl::opt<bool>
 TimeAggregator("time-aggr",
   cl::desc("time BOLT aggregator"),
   cl::init(false),
@@ -147,6 +154,10 @@ void DataAggregator::findPerfExecutable() {
 void DataAggregator::start() {
   outs() << "PERF2BOLT: Starting data aggregation job for " << Filename << "\n";
 
+  // Don't launch perf for cfggrind files
+  if (opts::ReadCfgGrind)
+    return;
+
   // Don't launch perf for pre-aggregated files
   if (opts::ReadPreAggregated)
     return;
@@ -183,6 +194,8 @@ void DataAggregator::start() {
 }
 
 void DataAggregator::abort() {
+  if (opts::ReadCfgGrind)
+    return;
   if (opts::ReadPreAggregated)
     return;
 
@@ -316,6 +329,9 @@ void DataAggregator::processFileBuildID(StringRef FileBuildID) {
 }
 
 bool DataAggregator::checkPerfDataMagic(StringRef FileName) {
+  if (opts::ReadCfgGrind)
+    return true;
+
   if (opts::ReadPreAggregated)
     return true;
 
@@ -334,6 +350,9 @@ bool DataAggregator::checkPerfDataMagic(StringRef FileName) {
   if (strncmp(Buf, "PERFILE", 7) == 0)
     return true;
   return false;
+}
+
+void DataAggregator::parseCfgGrind() {
 }
 
 void DataAggregator::parsePreAggregated() {
@@ -456,6 +475,11 @@ void DataAggregator::filterBinaryMMapInfo() {
 Error DataAggregator::preprocessProfile(BinaryContext &BC) {
   this->BC = &BC;
 
+  if (opts::ReadCfgGrind) {
+    parseCfgGrind();
+    return Error::success();
+  }
+  
   if (opts::ReadPreAggregated) {
     parsePreAggregated();
     return Error::success();
@@ -619,7 +643,9 @@ bool DataAggregator::mayHaveProfileData(const BinaryFunction &Function) {
 }
 
 void DataAggregator::processProfile(BinaryContext &BC) {
-  if (opts::ReadPreAggregated)
+  if (opts::ReadCfgGrind)
+    processCfgGrind();
+  else if (opts::ReadPreAggregated)
     processPreAggregated();
   else if (opts::BasicAggregation)
     processBasicEvents();
@@ -1209,6 +1235,85 @@ ErrorOr<Location> DataAggregator::parseLocationOrOffset() {
   return Location(true, BuildID.get(), Offset.get());
 }
 
+ErrorOr<DataAggregator::CfgGrindNodeEntry> parseCfgGrindNodeEntry() {
+  while (checkAndConsumeFS()) {
+  }
+  if (ParsingBuf[0] != '[')
+    return make_error_code(llvm::errc::io_error);
+  
+  ParsingBuf = ParsingBuf.drop_front(1);
+  Col += 1;
+  while (checkAndConsumeFS()) {
+  }
+  ErrorOr<StringRef> TypeOrErr = parseString(FieldSeparator);
+  if (std::error_code EC = TypeOrErr.getError())
+    return EC;
+
+  if (TypeOrErr.get() == "cfg") {
+    return null;
+  }
+
+  if (TypeOrErr.get() != "node") {
+    return make_error_code(llvm::errc::io_error);
+  }
+
+  while (checkAndConsumeFS()) {
+  }
+
+  ErrorOr<uint64_t> Cfg = parseHexField(FieldSeparator);
+  if (std::error_code EC = Cfg.getError())
+    return EC;
+  
+  while (checkAndConsumeFS()) {
+  }
+
+  ErrorOr<Location> NodeStart = Location(Cfg - parseHexField(FieldSeparator));
+  if (std::error_code EC = NodeStart.getError())
+    return EC;
+  
+  while (checkAndConsumeFS()) {
+  }
+
+  ErrorOr<int64_t> Size = parseNumberField(FieldSeparator);
+  if (std::error_code EC = Size.getError())
+    return EC;
+  
+  while (checkAndConsumeFS()) {
+  }
+  
+  if (ParsingBuf[0] != '[')
+    return make_error_code(llvm::errc::io_error);
+  ParsingBuf = ParsingBuf.drop_front(1);
+  Col += 1;
+
+  while (checkAndConsumeFS()) {
+  }
+
+  std::vector<Location> Instrs;
+  ErrorOr<Location> NextLocation = NodeStart
+
+  if (ParsingBuf[0] != ']') {
+    while(true) {
+      Instrs.push_back(NextLocation);
+      ErrorOr<int64_t> IntrSize = parseNumberField(FieldSeparator);
+      if (std::error_code EC = IntrSize.getError()) {
+        IntrSize = parseNumberField(']');
+        if (std::error_code EC = IntrSize.getError()) 
+          return EC;
+
+        break;
+      }
+      NextLocation = Location(NextLocation.Offset + IntrSize)
+    }
+  }
+  ParsingBuf = ParsingBuf.drop_front(1);
+  Col += 1;
+  
+  while (checkAndConsumeFS()) {
+  }
+
+}
+
 ErrorOr<DataAggregator::AggregatedLBREntry>
 DataAggregator::parseAggregatedLBREntry() {
   while (checkAndConsumeFS()) {
@@ -1702,6 +1807,23 @@ void DataAggregator::processMemEvents() {
   }
 }
 
+
+std::error_code DataAggregator::parsePreAggregatedLBRSamples() {
+  outs() << "PERF2BOLT: parsing cfggrind profile...\n";
+  NamedRegionTimer T("parseCfggrind", "Parsing cfggrind branch events",
+                     TimerGroupName, TimerGroupDesc, opts::TimeAggregator);
+  while (hasData()) {
+    if (ParsingBuf[0] == '#') {
+      consumeRestOfLine();
+      continue
+    }
+    ErrorOr<CfgGrindNodeEntry> nodeEntry = CfgGrindNodeEntry();
+
+    if (ParsingBuf[0] == '[')
+  }
+  return std::error_code();
+}
+
 std::error_code DataAggregator::parsePreAggregatedLBRSamples() {
   outs() << "PERF2BOLT: parsing pre-aggregated profile...\n";
   NamedRegionTimer T("parseAggregated", "Parsing aggregated branch events",
@@ -1722,6 +1844,9 @@ std::error_code DataAggregator::parsePreAggregatedLBRSamples() {
   }
 
   return std::error_code();
+}
+
+void DataAggregator::processCfgGrind() {
 }
 
 void DataAggregator::processPreAggregated() {
